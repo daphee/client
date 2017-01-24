@@ -588,17 +588,12 @@ OwncloudPropagator *PropagatorJob::propagator() const
 PropagatorJob::JobParallelism PropagateDirectory::parallelism()
 {
     // If any of the non-finished sub jobs is not parallel, we have to wait
-
-    // FIXME!  we should probably cache this result
-
-    if (_firstJob && _firstJob->_state != Finished) {
-        if (_firstJob->parallelism() != FullParallelism)
-            return WaitForFinished;
+    if (_firstJob && _firstJob->parallelism() != FullParallelism) {
+        return WaitForFinished;
     }
 
-    // FIXME: use the cached value of finished job
     for (int i = 0; i < _subJobs.count(); ++i) {
-        if (_subJobs.at(i)->_state != Finished && _subJobs.at(i)->parallelism() != FullParallelism) {
+        if (_subJobs.at(i)->parallelism() != FullParallelism) {
             return WaitForFinished;
         }
     }
@@ -629,15 +624,8 @@ bool PropagateDirectory::scheduleNextJob()
         return false;
     }
 
-    // cache the value of first unfinished subjob
     bool stopAtDirectory = false;
-    int i = _firstUnfinishedSubJob;
-    int subJobsCount = _subJobs.count();
-    while (i < subJobsCount && _subJobs.at(i)->_state == Finished) {
-      _firstUnfinishedSubJob = ++i;
-    }
-
-    for (int i = _firstUnfinishedSubJob; i < subJobsCount; ++i) {
+    for (int i = 0; i < _subJobs.size(); ++i) {
         if (_subJobs.at(i)->_state == Finished) {
             continue;
         }
@@ -665,8 +653,20 @@ bool PropagateDirectory::scheduleNextJob()
 
 void PropagateDirectory::slotSubJobFinished(SyncFileItem::Status status)
 {
+    PropagatorJob *subJob = static_cast<PropagatorJob *>(sender());
+
+    // Delete the job and remove it from our list of jobs.
+    subJob->deleteLater();
+    if (subJob == _firstJob.data()) {
+        _firstJob.reset();
+    } else {
+        bool removed = _subJobs.removeOne(subJob);
+        // FIXME: Try debug build
+        Q_ASSERT(removed);
+    }
+
     if (status == SyncFileItem::FatalError ||
-            (sender() == _firstJob.data() && status != SyncFileItem::Success && status != SyncFileItem::Restoration)) {
+            (subJob == _firstJob.data() && status != SyncFileItem::Success && status != SyncFileItem::Restoration)) {
         abort();
         _state = Finished;
         emit finished(status);
@@ -675,16 +675,10 @@ void PropagateDirectory::slotSubJobFinished(SyncFileItem::Status status)
         _hasError = status;
     }
     _runningNow--;
-    _jobsFinished++;
-
-    int totalJobs = _subJobs.count();
-    if (_firstJob) {
-        totalJobs++;
-    }
 
     // We finished processing all the jobs
     // check if we finished
-    if (_jobsFinished >= totalJobs) {
+    if (!_firstJob && _subJobs.isEmpty()) {
         Q_ASSERT(!_runningNow); // how can we be finished if there are still jobs running now
         finalize();
     } else {
